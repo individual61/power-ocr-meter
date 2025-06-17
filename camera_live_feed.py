@@ -4,7 +4,7 @@ import cv2
 from picamera2 import Picamera2
 import time
 
-def live_preview(resolution=(640, 480), framerate=30):
+def live_preview(resolution=(640, 480), framerate=15):
     """
     Stream the camera feed live in an OpenCV window.
     

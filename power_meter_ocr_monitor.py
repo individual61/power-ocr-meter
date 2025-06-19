@@ -26,7 +26,7 @@ array_of_mode_rois = [roi_watt, roi_curr, roi_volt, roi_freq, roi_ct, roi_ec, ro
 
 digit_width = 115
 digit_height = 200
-roi_digit1 = (121, 200, 121 + digit_width, 207 + digit_height)
+roi_digit1 = (115, 200, 115 + digit_width, 207 + digit_height)
 roi_digit2 = (236, 200, 236 + digit_width, 207 + digit_height)
 roi_digit3 = (361, 200, 361 + digit_width, 207 + digit_height)
 roi_digit4 = (491, 200, 491 + digit_width, 209 + digit_height)
@@ -76,6 +76,7 @@ lcd_state = {
 }
 
 SEGMENT_DIGIT_MAP = {
+    frozenset():                                        0,
     frozenset(["a","b","c","d","e","f"]):               0,
     frozenset(["b","c"]):                               1,
     frozenset(["a","b","g","e","d"]):                   2,
@@ -378,22 +379,37 @@ def loop():
     
     digit_1E4, digit_1E3, digit_1E2, digit_1E1, digit_1E0 = digit_values
     
+    
+    
     if any(v is None for v in digit_values):
         print("Warning: one or more segments failed to decode:", digit_values)
+        total_value = 0.0
     else:
         # 4) Compute the total numeric value
+        if not (lcd_state["dots"]["0.001"] or lcd_state["dots"]["0.01"] or 0.1*lcd_state["dots"]["0.1"]):
+            dot_multiplier = 1.0
+        else:
+            dot_multiplier = (
+                 0.001*lcd_state["dots"]["0.001"] +
+                 0.01*lcd_state["dots"]["0.01"] +
+                 0.1*lcd_state["dots"]["0.1"]
+                 )
         total_value = (
             digit_1E4 * 10_000 +
             digit_1E3 * 1_000 +
             digit_1E2 * 100 +
             digit_1E1 * 10 +
             digit_1E0
-        ) * (
-            0.001*lcd_state["dots"]["0.001"] +
-            0.01*lcd_state["dots"]["0.01"] +
-            0.1*lcd_state["dots"]["0.1"]
-            )
-        print(f"Decoded value: {total_value}")
+        ) * dot_multiplier
+        
+    active_modes = [mode for mode, on in lcd_state["modes"].items() if on]
+    if not active_modes:
+        mode_str = "unknown"
+    else:
+        # if you expect only one, you can just do active_modes[0]
+        mode_str = "+".join(active_modes)
+    
+    print(f"{mode_str}, {total_value:.4f} ")
 
     # Display
     cv2.imshow(window_name, frame_annotated_color)

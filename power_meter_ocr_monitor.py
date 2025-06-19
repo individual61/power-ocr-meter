@@ -8,6 +8,9 @@ import math
 import os
 import csv
 
+CAPTURE_INTERVAL = 0.35
+last_capture_time = 0.0
+
 LOG_DIR = "logs"
 
 
@@ -25,8 +28,6 @@ roi_freq = (22, 367, 111, 401)
 roi_ct =   (112, 68, 178, 117)
 roi_ec =   (418, 73, 485, 125)
 roi_pf =   (151, 132, 210, 177)
-
-
 array_of_mode_rois = [roi_watt, roi_curr, roi_volt, roi_freq, roi_ct, roi_ec, roi_pf]
 
 digit_width = 115
@@ -45,15 +46,6 @@ roi_dot2 =   (341, 378, 341 + dot_width, 378 + dot_height)
 roi_dot3 =   (464, 379, 464 + dot_width, 379 + dot_height)
 roi_dot4 =   (592, 382, 592 + dot_width, 382 + dot_height)
 array_of_dot_rois = [roi_dot2, roi_dot3, roi_dot4]
-
-roi_watt = (22, 196, 112, 232)
-roi_curr = (22, 237, 93, 276)
-roi_volt = (22, 280, 107, 317)
-roi_freq = (22, 367, 111, 401)
-roi_ct =   (112, 68, 178, 117)
-roi_ec =   (418, 73, 485, 125)
-roi_pf =   (151, 132, 210, 177)
-
 
 MODE_INDICATORS = ["watt", "curr", "volt",  "freq", "ct", "ec", "pf"]
 SEGMENT_NAMES = ["a", "b", "c", "d", "e", "f", "g"]
@@ -118,13 +110,11 @@ def log_entry(writer, mode, value, error_msg, logfile):
       value (float),
       error (string, blank if none)
     """
-
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     # nearest tenth of a second (truncate)
     tenth = now.microsecond // 100000
     time_str = f"{now:%H:%M:%S}.{tenth}"
-    # format value to four decimals (or change as desired)
     csv_writer.writerow([
         date_str,
         time_str,
@@ -132,7 +122,6 @@ def log_entry(writer, mode, value, error_msg, logfile):
         f"{value:.4f}",
         error_msg or ""
     ])
-    # ensure it’s written to disk promptly
     logfile.flush()
 
 def decode_digit(segments: dict[str, bool]) -> int | None:
@@ -142,9 +131,7 @@ def decode_digit(segments: dict[str, bool]) -> int | None:
     if the pattern is unrecognized.
     """
     global error_msg
-    # collect which segments are "on"
     on_segments = { seg for seg, lit in segments.items() if lit }
-    # look up in our map
     digit = SEGMENT_DIGIT_MAP.get(frozenset(on_segments))
     if digit is None:
         # sorted(...) just makes the output deterministic/orderly
@@ -160,25 +147,17 @@ def evaluate_roi(frame_thresh, roi_tuple, on_threshold=50):
     # count white pixels (value==255)
     white_pixels = cv2.countNonZero(roi_image)
     total_pixels = roi_image.shape[0] * roi_image.shape[1]
-    
-    # compute ratio
     black_pixels = (float(total_pixels) - white_pixels)
-    
-    # optional: for debugging, show ratio on the ROI window
-    # cv2.imshow("Segment ROI", roi)
 
     return_value = black_pixels >= on_threshold
     
-    #print(f"ROI {roi_tuple} black: {black_pixels:.2f} >= {on_threshold:.2f} --> {return_value}")
-    
-    cv2.imshow("Extracted Segment", roi_image)
-    cv2.waitKey(1)
-    
+    # Show secondwindow with ROI under consideration
+    #cv2.imshow("Extracted Segment", roi_image)
+    #cv2.waitKey(1)
     
     return black_pixels >= on_threshold
 
  
-
 def get_digit_sub_roi(digit_roi):
     dx1, dy1, dx2, dy2 = digit_roi
     x_middle = dx1 + (dx2 - dx1)/2.0
@@ -226,13 +205,16 @@ def get_digit_sub_roi(digit_roi):
                 math.floor(x_middle + offset_lateral + long_size/2),
                 math.floor(y_middle + y_seg_offset_side_bott + short_size/2))
         
-    #print(roi_top, roi_bott)
     return (roi_top, roi_tr, roi_br, roi_bott, roi_bl, roi_tl, roi_midd)
 
 def setup(resolution=(640, 480), framerate=30):
     """
     Configure and start the camera, create the display window.
     """
+    global last_capture_time
+    
+    last_capture_time = time.time() - CAPTURE_INTERVAL
+    
     global picam2
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(
@@ -248,233 +230,212 @@ def setup(resolution=(640, 480), framerate=30):
     # create the OpenCV window once
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     
-    
-    
 
 frame_clean_gr_prev = None
 #frame_clean_gr = None
 
 
 def loop():
-
-    """
-    Grabs a frame, shows it, and returns False if we should exit.
-    Extend this with your future processing steps.
-    """
     
-    global csv_writer, logfile, error_msg
+    global csv_writer, logfile, error_msg, last_capture_time
 
+    now = time.time()
     # Capture
     
-    rgb = picam2.capture_array()
-    time_now = time.time()
-    
-    # Convert for OpenCV
-    
-    frame_clean = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    frame_clean_gr_pre_thresh = cv2.cvtColor(frame_clean, cv2.COLOR_BGR2GRAY)
-    
-    _, frame_clean_gr = cv2.threshold( frame_clean_gr_pre_thresh,    # source image
-                                        160,               # threshold value (tweak as needed)
-                                        255,               # max value for pixels above threshold
-                                        cv2.THRESH_BINARY  # type of thresholding
-    )
-    
-    #############################################################
-    # Optional block to measure LCD update rate. Very likely 0.8 seconds, or 0.734.
-    if False:
-        global frame_clean_gr_prev
-        global time_last
-        if frame_clean_gr_prev is None:
-            frame_clean_gr_prev = frame_clean_gr.copy()
-            time_last = time_now
+    if now - last_capture_time >= CAPTURE_INTERVAL:
+        rgb = picam2.capture_array()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         
-        diff = cv2.absdiff(frame_clean_gr_prev, frame_clean_gr)
-        _, mask = cv2.threshold(diff, 55, 255, cv2.THRESH_BINARY)
-        num_pixels_changed = cv2.countNonZero(mask)
-        if num_pixels_changed > 1000:
-            delta_t = time_now - time_last
-            print(f"Display updated after {delta_t:.3f}s, {num_pixels_changed: 3f}")
-            time_last = time_now
+        #update_rate_time_now = time.time() # For testing mode update rate measurement
         
-        frame_clean_gr_prev = frame_clean_gr
+        # Convert for OpenCV
         
-        #frame_clean_th_previous = frame_clean_th.copy()
-        #frame_annotated = frame_clean_gr.copy()
-        #frame_annotated = diff.copy()
-        frame_annotated = mask.copy()
-    ###############################################################
+        frame_clean = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        frame_clean_gr_pre_thresh = cv2.cvtColor(frame_clean, cv2.COLOR_BGR2GRAY)
         
-    frame_annotated = frame_clean_gr.copy()
-    frame_annotated_color = cv2.cvtColor(frame_annotated,cv2.COLOR_GRAY2BGR)
-    
-    ##### Annotate frame with date
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    
-    # args: image, text, org (x,y), font, fontScale, color (BGR), thickness, lineType
-    cv2.putText(
-        frame_annotated_color,
-        timestamp,
-        (10, 30),                             # position in pixels from top-left
-        cv2.FONT_HERSHEY_SIMPLEX,             # font face
-        0.6,                                  # font scale (size)
-        (0, 200, 0),                   # font color (white)
-        1,                                    # thickness
-        cv2.LINE_AA                           # anti-aliased line
-    )
+        _, frame_clean_gr = cv2.threshold( frame_clean_gr_pre_thresh,    # source image
+                                            160,               # threshold value (tweak as needed)
+                                            255,               # max value for pixels above threshold
+                                            cv2.THRESH_BINARY  # type of thresholding
+        )
+        
+        #############################################################
+        # Optional block to measure LCD update rate. Very likely 0.8 seconds, or 0.734.
+    #     if False:
+    #         global frame_clean_gr_prev
+    #         global update_rate_time_last
+    #         if frame_clean_gr_prev is None:
+    #             frame_clean_gr_prev = frame_clean_gr.copy()
+    #             update_rate_time_last = update_rate_time_now
+    #         
+    #         diff = cv2.absdiff(frame_clean_gr_prev, frame_clean_gr)
+    #         _, mask = cv2.threshold(diff, 55, 255, cv2.THRESH_BINARY)
+    #         num_pixels_changed = cv2.countNonZero(mask)
+    #         if num_pixels_changed > 1000:
+    #             update_rate_delta_t = update_rate_time_now - update_rate_time_last
+    #             print(f"Display updated after {delta_t:.3f}s, {num_pixels_changed: 3f}")
+    #             update_rate_time_last = update_rate_time_now
+    #         
+    #         frame_clean_gr_prev = frame_clean_gr
+    #         
+    #         #frame_clean_th_previous = frame_clean_th.copy()
+    #         #frame_annotated = frame_clean_gr.copy()
+    #         #frame_annotated = diff.copy()
+    #         frame_annotated = mask.copy()
+        ###############################################################
+            
+        frame_annotated = frame_clean_gr.copy()
+        frame_annotated_color = cv2.cvtColor(frame_annotated,cv2.COLOR_GRAY2BGR)
+        
+        ##### Annotate frame with date
+        
+        
+        # args: image, text, org (x,y), font, fontScale, color (BGR), thickness, lineType
+        cv2.putText(
+            frame_annotated_color,
+            timestamp,
+            (10, 30),                             # position in pixels from top-left
+            cv2.FONT_HERSHEY_SIMPLEX,             # font face
+            0.6,                                  # font scale (size)
+            (0, 200, 0),                   # font color (white)
+            1,                                    # thickness
+            cv2.LINE_AA                           # anti-aliased line
+        )
 
-    ### Draw colored ROI boxes for all ROIs
-    
-    ########### DOTS
-    for dot_name, dot_roi in zip(DOT_NAMES, array_of_dot_rois):
-        x1, y1, x2, y2 = dot_roi
-        cv2.rectangle(
-            frame_annotated_color,
-            (x1 + roi_offs_x, y1 + roi_offs_y),
-            (x2 + roi_offs_x, y2 + roi_offs_y),
-            (255, 0, 0),
-            1
-            )
-        roi_status = evaluate_roi(frame_clean_gr, dot_roi, on_threshold=100)
-        lcd_state["dots"][dot_name] = roi_status
+        ### Draw colored ROI boxes for all ROIs
         
-        #print(f"ROI {segment_roi} status: {roi_status}")
-        if roi_status is True:
+        ########### DOTS
+        for dot_name, dot_roi in zip(DOT_NAMES, array_of_dot_rois):
+            x1, y1, x2, y2 = dot_roi
             cv2.rectangle(
                 frame_annotated_color,
-                (x2 + roi_offs_x - 5, y2 + roi_offs_y - 5),
+                (x1 + roi_offs_x, y1 + roi_offs_y),
                 (x2 + roi_offs_x, y2 + roi_offs_y),
-                (0, 0, 255),
-                -1
-                )
-            
-    ########### MODES    
-    for mode_name, mode_roi in zip(MODE_INDICATORS, array_of_mode_rois):
-        x1, y1, x2, y2 = mode_roi
-        cv2.rectangle(
-            frame_annotated_color,
-            (x1 + roi_offs_x, y1 + roi_offs_y),
-            (x2 + roi_offs_x, y2 + roi_offs_y),
-            (0, 255, 0),
-            1
-            )
-        roi_status = evaluate_roi(frame_clean_gr, mode_roi, on_threshold=100)
-        lcd_state["modes"][mode_name] = roi_status
-        
-        #print(f"ROI {segment_roi} status: {roi_status}")
-        if roi_status is True:
-            cv2.rectangle(
-                frame_annotated_color,
-                (x2 + roi_offs_x - 5, y2 + roi_offs_y - 5),
-                (x2 + roi_offs_x, y2 + roi_offs_y),
-                (0, 0, 255),
-                -1
-                )
-            
-    ########### DIGITS
-    for digit_name, digit_roi in zip(DIGIT_NAMES, array_of_digit_rois):
-        x1, y1, x2, y2 = digit_roi
-        cv2.rectangle(
-            frame_annotated_color,
-            (x1 + roi_offs_x, y1 + roi_offs_y),
-            (x2 + roi_offs_x, y2 + roi_offs_y),
-            (0, 0, 255),
-            1
-            )
-        
-        segment_rois = get_digit_sub_roi(digit_roi)
-        
-        for seg_name, segment_roi in zip(SEGMENT_NAMES, segment_rois):
-            #print(segment_roi)
-            sx1, sy1, sx2, sy2 = segment_roi
-            cv2.rectangle(
-                frame_annotated_color,
-                (sx1 + roi_offs_x, sy1 + roi_offs_y),
-                (sx2 + roi_offs_x, sy2 + roi_offs_y),
-                (255, 0, 255),
+                (255, 0, 0),
                 1
                 )
-            
-            roi_status = evaluate_roi(frame_clean_gr, segment_roi, on_threshold=100)
-            lcd_state["digits"][digit_name][seg_name] = roi_status
+            roi_status = evaluate_roi(frame_clean_gr, dot_roi, on_threshold=100)
+            lcd_state["dots"][dot_name] = roi_status
             
             #print(f"ROI {segment_roi} status: {roi_status}")
             if roi_status is True:
                 cv2.rectangle(
                     frame_annotated_color,
-                    (sx2 + roi_offs_x - 5, sy2 + roi_offs_y - 5),
-                    (sx2 + roi_offs_x, sy2 + roi_offs_y),
+                    (x2 + roi_offs_x - 5, y2 + roi_offs_y - 5),
+                    (x2 + roi_offs_x, y2 + roi_offs_y),
                     (0, 0, 255),
                     -1
-                    )   
+                    )
+                
+        ########### MODES    
+        for mode_name, mode_roi in zip(MODE_INDICATORS, array_of_mode_rois):
+            x1, y1, x2, y2 = mode_roi
+            cv2.rectangle(
+                frame_annotated_color,
+                (x1 + roi_offs_x, y1 + roi_offs_y),
+                (x2 + roi_offs_x, y2 + roi_offs_y),
+                (0, 255, 0),
+                1
+                )
+            roi_status = evaluate_roi(frame_clean_gr, mode_roi, on_threshold=100)
+            lcd_state["modes"][mode_name] = roi_status
+            
+            #print(f"ROI {segment_roi} status: {roi_status}")
+            if roi_status is True:
+                cv2.rectangle(
+                    frame_annotated_color,
+                    (x2 + roi_offs_x - 5, y2 + roi_offs_y - 5),
+                    (x2 + roi_offs_x, y2 + roi_offs_y),
+                    (0, 0, 255),
+                    -1
+                    )
+                
+        ########### DIGITS
+        for digit_name, digit_roi in zip(DIGIT_NAMES, array_of_digit_rois):
+            x1, y1, x2, y2 = digit_roi
+            cv2.rectangle(
+                frame_annotated_color,
+                (x1 + roi_offs_x, y1 + roi_offs_y),
+                (x2 + roi_offs_x, y2 + roi_offs_y),
+                (0, 0, 255),
+                1
+                )
+            
+            segment_rois = get_digit_sub_roi(digit_roi)
+            
+            for seg_name, segment_roi in zip(SEGMENT_NAMES, segment_rois):
+                #print(segment_roi)
+                sx1, sy1, sx2, sy2 = segment_roi
+                cv2.rectangle(
+                    frame_annotated_color,
+                    (sx1 + roi_offs_x, sy1 + roi_offs_y),
+                    (sx2 + roi_offs_x, sy2 + roi_offs_y),
+                    (255, 0, 255),
+                    1
+                    )
+                
+                roi_status = evaluate_roi(frame_clean_gr, segment_roi, on_threshold=100)
+                lcd_state["digits"][digit_name][seg_name] = roi_status
+                
+                #print(f"ROI {segment_roi} status: {roi_status}")
+                if roi_status is True:
+                    cv2.rectangle(
+                        frame_annotated_color,
+                        (sx2 + roi_offs_x - 5, sy2 + roi_offs_y - 5),
+                        (sx2 + roi_offs_x, sy2 + roi_offs_y),
+                        (0, 0, 255),
+                        -1
+                        )   
 
-    #array_of_mode_rois = [roi_watt, roi_curr, roi_volt, roi_freq, roi_ct, roi_ec, roi_pf]
-    #array_of_digit_rois = [roi_digit1, roi_digit2, roi_digit3, roi_digit4, roi_digit5]
-    #array_of_dot_rois = [roi_dot2, roi_dot3, roi_dot4]
-    # digit rois: (roi_top, roi_tr, roi_br, roi_bott, roi_bl, roi_tl, roi_midd)
-
-    # MODE_INDICATORS = ["watt", "curr", "volt",  "freq", "ct", "ec", "pf"]
-    # SEGMENT_NAMES = ["a", "b", "c", "d", "e", "f", "g"]
-    # DOT_NAMES = ["0.001", "0.01", "0.1"]
-    # DIGIT_NAMES = ["1E4", "1E3", "1E2", "1E1", "1E0"]
-    
-    # DIGITS, DOTS, MODES
-
-    #At this point the dictionary should be updated for the entire LCD state. 
- 
-    digit_values = [
-        decode_digit(lcd_state["digits"][name])
-        for name in DIGIT_NAMES
-    ]
-    
-    digit_1E4, digit_1E3, digit_1E2, digit_1E1, digit_1E0 = digit_values
-    
-    
-    
-    if any(v is None for v in digit_values):
-        print("Warning: one or more segments failed to decode:", digit_values)
-        total_value = 0.0
-    else:
-        # 4) Compute the total numeric value
-        if not (lcd_state["dots"]["0.001"] or lcd_state["dots"]["0.01"] or 0.1*lcd_state["dots"]["0.1"]):
-            dot_multiplier = 1.0
-        else:
-            dot_multiplier = (
-                 0.001*lcd_state["dots"]["0.001"] +
-                 0.01*lcd_state["dots"]["0.01"] +
-                 0.1*lcd_state["dots"]["0.1"]
-                 )
-        total_value = (
-            digit_1E4 * 10_000 +
-            digit_1E3 * 1_000 +
-            digit_1E2 * 100 +
-            digit_1E1 * 10 +
-            digit_1E0
-        ) * dot_multiplier
+        #At this point the dictionary should be updated for the entire LCD state. 
+     
+        digit_values = [
+            decode_digit(lcd_state["digits"][name])
+            for name in DIGIT_NAMES
+        ]
         
-    active_modes = [mode for mode, on in lcd_state["modes"].items() if on]
-    if not active_modes:
-        mode_str = "unknown"
-    else:
-        # if you expect only one, you can just do active_modes[0]
-        mode_str = "+".join(active_modes)
-    
-    print(f"{mode_str}, {total_value:.4f} ")
-    
+        digit_1E4, digit_1E3, digit_1E2, digit_1E1, digit_1E0 = digit_values
+        
+        if any(v is None for v in digit_values):
+            print("Warning: one or more segments failed to decode:", digit_values)
+            total_value = 0.0
+        else:
+            # 4) Compute the total numeric value
+            if not (lcd_state["dots"]["0.001"] or lcd_state["dots"]["0.01"] or 0.1*lcd_state["dots"]["0.1"]):
+                dot_multiplier = 1.0
+            else:
+                dot_multiplier = (
+                     0.001*lcd_state["dots"]["0.001"] +
+                     0.01*lcd_state["dots"]["0.01"] +
+                     0.1*lcd_state["dots"]["0.1"]
+                     )
+            total_value = (
+                digit_1E4 * 10_000 +
+                digit_1E3 * 1_000 +
+                digit_1E2 * 100 +
+                digit_1E1 * 10 +
+                digit_1E0
+            ) * dot_multiplier
+            
+        active_modes = [mode for mode, on in lcd_state["modes"].items() if on]
+        if not active_modes:
+            mode_str = "unknown"
+        else:
+            # if you expect only one, you can just do active_modes[0]
+            mode_str = "+".join(active_modes)
+        
+        print(f"{mode_str}, {total_value:.4f} ")
+        
+        log_entry(csv_writer, mode_str, total_value, error_msg, logfile)
+        error_msg = ""
 
+        # Display
+        cv2.imshow(window_name, frame_annotated_color)
 
-    log_entry(csv_writer, mode_str, total_value, error_msg, logfile)
-    error_msg = ""
-
-    # Display
-    cv2.imshow(window_name, frame_annotated_color)
-
-    # Handle key & exit condition
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q'):
-        return False
-
-    # TODO: insert more processing here, e.g. detect/display ROIs, decode digits, etc.
+        # Handle key & exit condition
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            return False
 
     return True
 

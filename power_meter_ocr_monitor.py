@@ -5,6 +5,11 @@ import time
 from picamera2 import Picamera2
 from datetime import datetime
 import math
+import os
+import csv
+
+LOG_DIR = "logs"
+
 
 # Global handles (so both setup() and loop() can see them)
 picam2 = None
@@ -40,8 +45,6 @@ roi_dot2 =   (341, 378, 341 + dot_width, 378 + dot_height)
 roi_dot3 =   (464, 379, 464 + dot_width, 379 + dot_height)
 roi_dot4 =   (592, 382, 592 + dot_width, 382 + dot_height)
 array_of_dot_rois = [roi_dot2, roi_dot3, roi_dot4]
-
-
 
 roi_watt = (22, 196, 112, 232)
 roi_curr = (22, 237, 93, 276)
@@ -89,19 +92,65 @@ SEGMENT_DIGIT_MAP = {
     frozenset(["a","b","c","d","f","g"]):               9,
 }
 
+error_msg = ""
+logfile = None
+csv_writer = None
+
+def init_logger():
+    global logfile, csv_writer
+    os.makedirs(LOG_DIR, exist_ok=True)
+    # filename is timestamped to the second
+    fname = datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
+    path = os.path.join(LOG_DIR, fname)
+    logfile = open(path, "w", newline="")
+    csv_writer = csv.writer(logfile)
+    # write header row
+    csv_writer.writerow(["date", "time", "mode", "value", "error"])
+    logfile.flush()
+    return logfile, csv_writer
+
+def log_entry(writer, mode, value, error_msg, logfile):
+    """
+    Append one row to the CSV:
+      date (YYYY-MM-DD),
+      time (HH:MM:SS.tenth),
+      mode (string),
+      value (float),
+      error (string, blank if none)
+    """
+
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    # nearest tenth of a second (truncate)
+    tenth = now.microsecond // 100000
+    time_str = f"{now:%H:%M:%S}.{tenth}"
+    # format value to four decimals (or change as desired)
+    csv_writer.writerow([
+        date_str,
+        time_str,
+        mode,
+        f"{value:.4f}",
+        error_msg or ""
+    ])
+    # ensure it’s written to disk promptly
+    logfile.flush()
+
 def decode_digit(segments: dict[str, bool]) -> int | None:
     """
     Given a dict mapping segment names ("a"–"g") to booleans,
     return the integer 0–9 that those segments form, or None
     if the pattern is unrecognized.
     """
+    global error_msg
     # collect which segments are "on"
     on_segments = { seg for seg, lit in segments.items() if lit }
     # look up in our map
     digit = SEGMENT_DIGIT_MAP.get(frozenset(on_segments))
     if digit is None:
         # sorted(...) just makes the output deterministic/orderly
-        print(f"Warning: decode_digit got unrecognized segment pattern: {sorted(on_segments)}")
+        error = f"Warning: decode_digit got unrecognized segment pattern: {sorted(on_segments)}"
+        error_msg = error_msg + error
+        print(error)
     return digit
 
 def evaluate_roi(frame_thresh, roi_tuple, on_threshold=50):
@@ -213,6 +262,7 @@ def loop():
     Extend this with your future processing steps.
     """
     
+    global csv_writer, logfile, error_msg
 
     # Capture
     
@@ -410,6 +460,11 @@ def loop():
         mode_str = "+".join(active_modes)
     
     print(f"{mode_str}, {total_value:.4f} ")
+    
+
+
+    log_entry(csv_writer, mode_str, total_value, error_msg, logfile)
+    error_msg = ""
 
     # Display
     cv2.imshow(window_name, frame_annotated_color)
@@ -426,9 +481,12 @@ def loop():
 
 
 def main():
+    global logfile, csvwriter
     try:
         # -- initialize once --
         setup(resolution=(800, 600), framerate=30)
+
+        logfile, csv_writer = init_logger()
 
         # -- then run loop until it returns False --
         while loop():
@@ -438,6 +496,7 @@ def main():
         # -- cleanup when done or on error --
         picam2.stop()
         cv2.destroyAllWindows()
+        logfile.close()
 
 if __name__ == "__main__":
     main()

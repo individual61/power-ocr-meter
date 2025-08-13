@@ -156,16 +156,18 @@ def init_logger():
     path = os.path.join(LOG_DIR, fname)
     logfile = open(path, "w", newline="")
     csv_writer = csv.writer(logfile)
-    csv_writer.writerow(["date", "time", "mode", "value", "error"])
+    # Single combined timestamp column (ms precision)
+    csv_writer.writerow(["timestamp", "mode", "value", "error"])
     logfile.flush()
     return logfile, csv_writer
 
-def log_entry(writer, mode, value, error_msg, logfile):
-    now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    tenth = now.microsecond // 100000
-    time_str = f"{now:%H:%M:%S}.{tenth}"
-    writer.writerow([date_str, time_str, mode, f"{value:.4f}", error_msg or ""])
+def _fmt_ts(dt: datetime) -> str:
+    # Format: YYYY-MM-DD HH:MM:SS.mmm (ms precision)
+    return f"{dt:%Y-%m-%d %H:%M:%S}.{dt.microsecond // 1000:03d}"
+
+def log_entry(writer, mode, value, error_msg, logfile, captured_at: datetime | None = None):
+    ts = captured_at or datetime.now()
+    writer.writerow([_fmt_ts(ts), mode, f"{value:.4f}", error_msg or ""])
     logfile.flush()
 
 def decode_digit(segments: dict[str, bool]) -> int | None:
@@ -247,7 +249,8 @@ def loop(preview=False):
     now = time.time()
     if now - last_capture_time >= CAPTURE_INTERVAL:
         rgb = picam2.capture_array()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        captured_at = datetime.now()
+        timestamp = _fmt_ts(captured_at)  # for overlay text
         frame_clean = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         frame_clean_gr_pre = cv2.cvtColor(frame_clean, cv2.COLOR_BGR2GRAY)
         _, frame_clean_gr = cv2.threshold(frame_clean_gr_pre, 160, 255, cv2.THRESH_BINARY)
@@ -316,7 +319,7 @@ def loop(preview=False):
         mode_str = "+".join(active_modes) if active_modes else "unknown"
 
         print(f"{mode_str}, {total_value:.4f}")
-        log_entry(csv_writer, mode_str, total_value, error_msg, logfile)
+        log_entry(csv_writer, mode_str, total_value, error_msg, logfile, captured_at=captured_at)
         error_msg = ""
 
         if preview:
@@ -324,6 +327,8 @@ def loop(preview=False):
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 return False
+                
+        last_capture_time = now
 
     return True
 

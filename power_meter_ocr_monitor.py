@@ -7,6 +7,7 @@ from datetime import datetime
 import math
 import os
 import csv
+import lifepo4wered
 
 CAPTURE_INTERVAL = 0.35
 last_capture_time = 0.0

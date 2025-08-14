@@ -274,18 +274,15 @@ def get_digit_sub_roi(digit_roi):
 def setup(resolution=(640, 480), framerate=30, preview=False):
     global last_capture_time, picam2
     last_capture_time = time.time() - CAPTURE_INTERVAL
-
     picam2 = Picamera2()
 
-    # No Picamera2-built-in display; rely on OpenCV window in preview mode
-    config = picam2.create_preview_configuration(
-        main={"size": resolution},
-        lores={"size": resolution}
+    config = picam2.create_video_configuration(
+        main={"size": resolution, "format": "XRGB8888"}  # single stream
     )
     picam2.configure(config)
+    picam2.set_controls({"FrameRate": 10})  # lighten ISP load
     picam2.start()
     time.sleep(0.1)
-
     if preview:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 

@@ -1,142 +1,21 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import cv2
-import time
-from picamera2 import Picamera2
-from datetime import datetime
 import math
 import os
-import csv
 import signal
-import sys
-
-# --- LiFePO4wered: Python binding (with CLI fallback) ---
 import subprocess
+import sys
+import time
+from datetime import datetime
+from picamera2 import Picamera2
 
-LP4W_AVAILABLE = False
-try:
-    # Python binding from the LiFePO4wered repo
-    from lifepo4wered import (
-        read_lifepo4wered, write_lifepo4wered,
-        VBAT, VIN, IOUT,
-        AUTO_BOOT, AUTO_SHDN_TIME, VIN_THRESHOLD, CFG_WRITE
-    )
-    LP4W_AVAILABLE = True
-except Exception:
-    LP4W_AVAILABLE = False  # we'll fall back to the CLI
+# ============================================================
+# CLI
+# ============================================================
 
-# ===== LiFePO4wered Runtime Policy (applied on each start) =====
-LP4W_POLICY = {
-    "AUTO_BOOT": 3,         # 3 = AUTO_BOOT_VIN (boot only when VIN present)
-    "AUTO_SHDN_TIME": 3,    # minutes to wait after VIN < threshold before shutdown
-    "VIN_THRESHOLD_mV": 4500,  # adjust if your PSU/cable sags under load
-    # "VBAT_BOOT_mV": 3150,  # uncomment to tweak boot threshold if needed
-}
-LP4W_PERSIST_DEFAULT = False  # use --lp4w-persist to override on demand
-
-
-persist = getattr(args, "lp4w_persist", LP4W_PERSIST_DEFAULT)
-ok, err = lp4w_apply_config(
-    delay_minutes=LP4W_POLICY["AUTO_SHDN_TIME"],
-    auto_boot_mode=LP4W_POLICY["AUTO_BOOT"],
-    persist=persist
-)
-# VIN threshold (optional)
-try:
-    _cli_set("VIN_THRESHOLD", LP4W_POLICY["VIN_THRESHOLD_mV"])
-    if persist:
-        _cli_set("CFG_WRITE", 0x46)
-except Exception as e:
-    print(f"[LiFePO4wered] VIN_THRESHOLD set failed: {e}")
-
-
-
-def _cli_get(name: str) -> int:
-    # Returns integer value (e.g., mV or mA) via lifepo4wered-cli
-    out = subprocess.check_output(["lifepo4wered-cli", "get", name], text=True).strip()
-    return int(out)
-
-def _cli_set(name: str, value: int) -> None:
-    subprocess.check_call(["lifepo4wered-cli", "set", name, str(value)])
-
-def lp4w_get_vbat_mV() -> int:
-    return read_lifepo4wered(VBAT) if LP4W_AVAILABLE else _cli_get("vbat")
-
-def lp4w_get_vin_mV() -> int:
-    return read_lifepo4wered(VIN) if LP4W_AVAILABLE else _cli_get("vin")
-
-def lp4w_get_iout_mA() -> int:
-    return read_lifepo4wered(IOUT) if LP4W_AVAILABLE else _cli_get("iout")
-
-def lp4w_apply_config(delay_minutes:int=3, auto_boot_mode:int=3, persist:bool=False):
-    """
-    delay_minutes: minutes to wait after VIN < VIN_THRESHOLD before shutdown
-    auto_boot_mode: 3 = AUTO_BOOT_VIN (only boot when VIN present)
-    persist: if True, write changes to flash (CFG_WRITE 0x46). Use with care.
-    """
-    try:
-        if LP4W_AVAILABLE:
-            write_lifepo4wered(AUTO_SHDN_TIME, delay_minutes)
-            write_lifepo4wered(AUTO_BOOT, auto_boot_mode)
-            if persist:
-                write_lifepo4wered(CFG_WRITE, 0x46)
-        else:
-            _cli_set("AUTO_SHDN_TIME", delay_minutes)
-            _cli_set("AUTO_BOOT", auto_boot_mode)
-            if persist:
-                _cli_set("CFG_WRITE", 0x46)
-        return True, None
-    except Exception as e:
-        return False, str(e)
-    
-    
-### Run with  --no-preview to run headless, with no camera display.
-
-## Steps to install
-#Install systemd service to run headless at boot
-#sudo nano /etc/systemd/system/power-ocr-meter.service
-
-# Contents:
-# /etc/systemd/system/power-ocr-meter.service
-# [Unit]
-# Description=Power OCR Meter (PiCam -> 7-seg -> CSV)
-# After=lifepo4wered-daemon.service
-# 
-# [Service]
-# Type=simple
-# User=paulwb
-# Group=paulwb
-# WorkingDirectory=/home/paulwb/Documents/GitHub/power-ocr-meter
-# Environment=PYTHONUNBUFFERED=1
-# ExecStartPre=/bin/sleep 5
-# ExecStart=/usr/bin/python3 /home/paulwb/Documents/GitHub/power-ocr-meter/power_meter_ocr_monitor.py --no-preview --interval 0.35 --resolution 800x600 --log-dir logs
-# Restart=always
-# RestartSec=2
-# KillSignal=SIGTERM
-# TimeoutStopSec=10
-# 
-# [Install]
-# WantedBy=multi-user.target
-
-
-# To enable and start:
-
-# sudo systemctl daemon-reload
-# sudo systemctl enable power-ocr-meter.service
-# sudo systemctl start power-ocr-meter.service
-
-# To check logs live:
-
-#journalctl -u power-ocr-meter -f
-
-# To shut down
-# sudo systemctl restart power-ocr-meter.service
-#sudo systemctl stop power-ocr-meter.service
-# sudo systemctl disable power-ocr-meter.service
-
-# -------- CLI --------
 def parse_args():
-    import argparse
     p = argparse.ArgumentParser(description="Power meter OCR logger")
 
     # Default = preview ON. Use --no-preview to run headless/efficient.
@@ -153,10 +32,12 @@ def parse_args():
                    help='Directory for CSV logs (default: "logs").')
     p.add_argument("--resolution", default="800x600",
                    help="Camera resolution as WxH (default: 800x600).")
-    p.add_argument("--lp4w-persist", action="store_true",
-               help="Persist LiFePO4wered config to flash (CFG_WRITE 0x46). Use carefully.")
-    return p.parse_args()
 
+    # Persist LiFePO4wered policy to flash (CFG_WRITE 0x46)
+    p.add_argument("--lp4w-persist", action="store_true",
+                   help="Persist LiFePO4wered policy to flash (use with care).")
+
+    return p.parse_args()
 
 args = parse_args()
 
@@ -171,7 +52,85 @@ CAPTURE_INTERVAL = args.interval
 LOG_DIR = args.log_dir
 RESOLUTION = parse_res(args.resolution)
 
-# -------- globals --------
+# ============================================================
+# LiFePO4wered integration
+# ============================================================
+
+LP4W_AVAILABLE = False
+try:
+    # Python binding from https://github.com/xorbit/LiFePO4wered-Pi
+    from lifepo4wered import (
+        read_lifepo4wered, write_lifepo4wered,
+        VBAT, VIN, IOUT,
+        AUTO_BOOT, AUTO_SHDN_TIME, VIN_THRESHOLD, CFG_WRITE
+    )
+    LP4W_AVAILABLE = True
+except Exception:
+    LP4W_AVAILABLE = False  # we'll fall back to CLI if present
+
+def _cli_get(name: str) -> int:
+    out = subprocess.check_output(["lifepo4wered-cli", "get", name], text=True).strip()
+    # Some outputs are "NAME = value"; handle both raw and "NAME = X"
+    if "=" in out:
+        out = out.split("=", 1)[1].strip()
+    return int(out)
+
+def _cli_set(name: str, value: int) -> None:
+    subprocess.check_call(["lifepo4wered-cli", "set", name, str(value)])
+
+def lp4w_get_vbat_mV() -> int:
+    return read_lifepo4wered(VBAT) if LP4W_AVAILABLE else _cli_get("VBAT")
+
+def lp4w_get_vin_mV() -> int:
+    return read_lifepo4wered(VIN) if LP4W_AVAILABLE else _cli_get("VIN")
+
+def lp4w_get_iout_mA() -> int:
+    return read_lifepo4wered(IOUT) if LP4W_AVAILABLE else _cli_get("IOUT")
+
+def lp4w_set_vin_threshold_mV(value: int, persist: bool):
+    if LP4W_AVAILABLE:
+        write_lifepo4wered(VIN_THRESHOLD, value)
+        if persist:
+            write_lifepo4wered(CFG_WRITE, 0x46)
+    else:
+        _cli_set("VIN_THRESHOLD", value)
+        if persist:
+            _cli_set("CFG_WRITE", 0x46)
+
+def lp4w_apply_config(delay_minutes: int, auto_boot_mode: int, persist: bool):
+    """
+    Apply key policy:
+      - AUTO_SHDN_TIME: minutes to wait after VIN < threshold before shutdown
+      - AUTO_BOOT:      3 = AUTO_BOOT_VIN (boot only when VIN present)
+    """
+    try:
+        if LP4W_AVAILABLE:
+            write_lifepo4wered(AUTO_SHDN_TIME, delay_minutes)
+            write_lifepo4wered(AUTO_BOOT,      auto_boot_mode)
+            if persist:
+                write_lifepo4wered(CFG_WRITE, 0x46)
+        else:
+            _cli_set("AUTO_SHDN_TIME", delay_minutes)
+            _cli_set("AUTO_BOOT", auto_boot_mode)
+            if persist:
+                _cli_set("CFG_WRITE", 0x46)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+# ===== Runtime LiFePO4wered Policy (applied each start) =====
+LP4W_POLICY = {
+    "AUTO_BOOT": 3,            # 3 = AUTO_BOOT_VIN (boot only when VIN present)
+    "AUTO_SHDN_TIME": 2,       # minutes to wait after VIN < threshold before shutdown
+    "VIN_THRESHOLD_mV": 4500,  # adjust if your PSU/cable sags
+    # "VBAT_BOOT_mV": 3150,    # add if you want to override default boot threshold
+}
+LP4W_PERSIST_DEFAULT = False   # use --lp4w-persist to write to flash
+
+# ============================================================
+# OCR / decoding state
+# ============================================================
+
 last_capture_time = 0.0
 picam2 = None
 window_name = "PiCam Live Preview (press 'q' to quit)"
@@ -180,7 +139,7 @@ logfile = None
 csv_writer = None
 RUNNING = True  # toggled by signal handlers
 
-# Global offsets/ROIs (unchanged from your code)
+# Global offsets/ROIs
 roi_offs_x = 0
 roi_offs_y = 0
 roi_watt = (22, 196, 112, 232)
@@ -233,6 +192,14 @@ SEGMENT_DIGIT_MAP = {
     frozenset(["a","b","c","d","f","g"]): 9,
 }
 
+# ============================================================
+# Logging
+# ============================================================
+
+def _fmt_ts(dt: datetime) -> str:
+    # Format: YYYY-MM-DD HH:MM:SS.mmm (ms precision)
+    return f"{dt:%Y-%m-%d %H:%M:%S}.{dt.microsecond // 1000:03d}"
+
 def init_logger():
     global logfile, csv_writer
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -240,22 +207,24 @@ def init_logger():
     path = os.path.join(LOG_DIR, fname)
     logfile = open(path, "w", newline="")
     csv_writer = csv.writer(logfile)
-    # New header: timestamp, mode, value, vbat_mV, vin_mV, iout_mA, error
+    # Combined timestamp + power metrics
     csv_writer.writerow(["timestamp", "mode", "value", "vbat_mV", "vin_mV", "iout_mA", "error"])
     logfile.flush()
     return logfile, csv_writer
 
-def log_entry(writer, mode, value, error_msg, logfile):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # ms resolution
-    try:
-        vbat = lp4w_get_vbat_mV()
-        vin  = lp4w_get_vin_mV()
-        iout = lp4w_get_iout_mA()
-    except Exception as e:
-        vbat = vin = iout = ""
-        print(f"[LiFePO4wered] read failed: {e}")
-    writer.writerow([now, mode, f"{value:.4f}", vbat, vin, iout, error_msg or ""])
+def log_entry(writer, captured_at: datetime, mode, value, error_msg, logfile,
+              vbat_mV=None, vin_mV=None, iout_mA=None):
+    ts = _fmt_ts(captured_at)
+    writer.writerow([ts, mode, f"{value:.4f}",
+                     "" if vbat_mV is None else vbat_mV,
+                     "" if vin_mV  is None else vin_mV,
+                     "" if iout_mA is None else iout_mA,
+                     error_msg or ""])
     logfile.flush()
+
+# ============================================================
+# Image processing helpers
+# ============================================================
 
 def decode_digit(segments: dict[str, bool]) -> int | None:
     global error_msg
@@ -308,18 +277,17 @@ def setup(resolution=(640, 480), framerate=30, preview=False):
 
     picam2 = Picamera2()
 
-    # No built-in preview; rely on OpenCV window only
+    # No Picamera2-built-in display; rely on OpenCV window in preview mode
     config = picam2.create_preview_configuration(
         main={"size": resolution},
         lores={"size": resolution}
-        # note: intentionally NO display="main"
     )
     picam2.configure(config)
     picam2.start()
     time.sleep(0.1)
 
     if preview:
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)  # WINDOW_NORMAL plays nicer over NX
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
 def compute_dot_multiplier(dots: dict[str, bool]) -> float:
     # priority: 0.1, 0.01, 0.001; default 1.0
@@ -335,15 +303,18 @@ def loop(preview=False):
     global csv_writer, logfile, error_msg, last_capture_time
     now = time.time()
     if now - last_capture_time >= CAPTURE_INTERVAL:
+        # Capture + timestamp (use same timestamp across processing)
         rgb = picam2.capture_array()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        captured_at = datetime.now()
+        overlay_ts = _fmt_ts(captured_at)
+
         frame_clean = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         frame_clean_gr_pre = cv2.cvtColor(frame_clean, cv2.COLOR_BGR2GRAY)
         _, frame_clean_gr = cv2.threshold(frame_clean_gr_pre, 160, 255, cv2.THRESH_BINARY)
 
         if preview:
             frame_annotated_color = cv2.cvtColor(frame_clean_gr, cv2.COLOR_GRAY2BGR)
-            cv2.putText(frame_annotated_color, timestamp, (10, 30),
+            cv2.putText(frame_annotated_color, overlay_ts, (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 1, cv2.LINE_AA)
 
         # Dots
@@ -404,8 +375,18 @@ def loop(preview=False):
         active_modes = [mode for mode, on in lcd_state["modes"].items() if on]
         mode_str = "+".join(active_modes) if active_modes else "unknown"
 
+        # Read LiFePO4wered telemetry (best effort)
+        vbat = vin = iout = None
+        try:
+            vbat = lp4w_get_vbat_mV()
+            vin  = lp4w_get_vin_mV()
+            iout = lp4w_get_iout_mA()
+        except Exception as e:
+            print(f"[LiFePO4wered] read failed: {e}")
+
         print(f"{mode_str}, {total_value:.4f}")
-        log_entry(csv_writer, mode_str, total_value, error_msg, logfile)
+        log_entry(csv_writer, captured_at, mode_str, total_value, error_msg, logfile,
+                  vbat_mV=vbat, vin_mV=vin, iout_mA=iout)
         error_msg = ""
 
         if preview:
@@ -414,9 +395,15 @@ def loop(preview=False):
             if key == ord('q'):
                 return False
 
+        # Honor the capture interval
+        last_capture_time = now
+
     return True
 
-# -------- signals --------
+# ============================================================
+# Signals / main
+# ============================================================
+
 def _handle_signal(signum, frame):
     global RUNNING
     RUNNING = False
@@ -428,14 +415,28 @@ def main():
     global logfile, csv_writer
     try:
         setup(resolution=RESOLUTION, framerate=30, preview=args.preview)
-        logfile, csv_writer = init_logger()
-        # Apply the power policy (3 min grace on VIN loss; boot only when VIN present)
-        ok, err = lp4w_apply_config(delay_minutes=3, auto_boot_mode=3, persist=args.lp4w_persist)
+
+        # Apply LiFePO4wered policy at start
+        persist = getattr(args, "lp4w_persist", LP4W_PERSIST_DEFAULT)
+        ok, err = lp4w_apply_config(
+            delay_minutes=LP4W_POLICY["AUTO_SHDN_TIME"],
+            auto_boot_mode=LP4W_POLICY["AUTO_BOOT"],
+            persist=persist
+        )
         if not ok:
-            print(f"[LiFePO4wered] Config apply failed: {err}")
-            
+            print(f"[LiFePO4wered] policy apply failed: {err}")
+
+        # Set VIN_THRESHOLD (optional but recommended)
+        try:
+            lp4w_set_vin_threshold_mV(LP4W_POLICY["VIN_THRESHOLD_mV"], persist=persist)
+        except Exception as e:
+            print(f"[LiFePO4wered] VIN_THRESHOLD set failed: {e}")
+
+        logfile, csv_writer = init_logger()
+
         while RUNNING and loop(preview=args.preview):
             pass
+
     finally:
         try:
             if picam2 is not None:
@@ -455,4 +456,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main() or 0)
-

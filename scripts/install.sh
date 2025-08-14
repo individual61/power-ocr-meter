@@ -4,7 +4,7 @@ set -euo pipefail
 USER_NAME="paulwb"
 REPO_DIR="/home/${USER_NAME}/Documents/GitHub/power-ocr-meter"
 PY="/usr/bin/python3"                    # swap to venv path if you use one
-INTERVAL="5"
+INTERVAL="2"
 RES="800x600"
 LOG_DIR="logs"
 UNIT_PATH="/etc/systemd/system/power-ocr-meter.service"
@@ -45,6 +45,8 @@ WorkingDirectory=${REPO_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=LIBCAMERA_LOG_LEVELS=*:ERROR
 Environment=OPENCV_LOG_LEVEL=ERROR
+Nice=10
+IOSchedulingClass=idle
 ExecStartPre=/bin/sleep 5
 ExecStart=${PY} ${REPO_DIR}/power_meter_ocr_monitor.py --no-preview --interval ${INTERVAL} --resolution ${RES} --log-dir ${LOG_DIR}
 Restart=always

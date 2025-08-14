@@ -11,6 +11,12 @@ import time
 from datetime import datetime
 from picamera2 import Picamera2
 
+try:
+    cv2.setUseOptimized(True)  # usually already True, but explicit is fine
+    cv2.setNumThreads(1)       # keep CPU usage predictable (good for Pi/Zero 2 W)
+except Exception:
+    pass
+
 # ============================================================
 # CLI
 # ============================================================

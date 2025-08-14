@@ -302,7 +302,12 @@ def compute_dot_multiplier(dots: dict[str, bool]) -> float:
 def loop(preview=False):
     global csv_writer, logfile, error_msg, last_capture_time
     now = time.time()
-    if now - last_capture_time >= CAPTURE_INTERVAL:
+    elapsed = now - last_capture_time
+    if elapsed < CAPTURE_INTERVAL:
+        # Sleep just enough, but cap it so signals remain responsive
+        time.sleep(min(CAPTURE_INTERVAL - elapsed, 0.05))
+        return True
+    if elapsed >= CAPTURE_INTERVAL:
         # Capture + timestamp (use same timestamp across processing)
         rgb = picam2.capture_array()
         captured_at = datetime.now()

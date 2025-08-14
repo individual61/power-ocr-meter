@@ -25,6 +25,32 @@ try:
 except Exception:
     LP4W_AVAILABLE = False  # we'll fall back to the CLI
 
+# ===== LiFePO4wered Runtime Policy (applied on each start) =====
+LP4W_POLICY = {
+    "AUTO_BOOT": 3,         # 3 = AUTO_BOOT_VIN (boot only when VIN present)
+    "AUTO_SHDN_TIME": 3,    # minutes to wait after VIN < threshold before shutdown
+    "VIN_THRESHOLD_mV": 4500,  # adjust if your PSU/cable sags under load
+    # "VBAT_BOOT_mV": 3150,  # uncomment to tweak boot threshold if needed
+}
+LP4W_PERSIST_DEFAULT = False  # use --lp4w-persist to override on demand
+
+
+persist = getattr(args, "lp4w_persist", LP4W_PERSIST_DEFAULT)
+ok, err = lp4w_apply_config(
+    delay_minutes=LP4W_POLICY["AUTO_SHDN_TIME"],
+    auto_boot_mode=LP4W_POLICY["AUTO_BOOT"],
+    persist=persist
+)
+# VIN threshold (optional)
+try:
+    _cli_set("VIN_THRESHOLD", LP4W_POLICY["VIN_THRESHOLD_mV"])
+    if persist:
+        _cli_set("CFG_WRITE", 0x46)
+except Exception as e:
+    print(f"[LiFePO4wered] VIN_THRESHOLD set failed: {e}")
+
+
+
 def _cli_get(name: str) -> int:
     # Returns integer value (e.g., mV or mA) via lifepo4wered-cli
     out = subprocess.check_output(["lifepo4wered-cli", "get", name], text=True).strip()

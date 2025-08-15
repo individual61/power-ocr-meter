@@ -134,6 +134,74 @@ LP4W_POLICY = {
 LP4W_PERSIST_DEFAULT = False   # use --lp4w-persist to write to flash
 
 # ============================================================
+# Temperature helpers
+# ============================================================
+
+def _read_all_thermal_zones():
+    """
+    Returns {zone_type_lower: temp_C_float}
+    Reads /sys/class/thermal/thermal_zone*/{type,temp}; values are in millidegC.
+    """
+    temps = {}
+    base = "/sys/class/thermal"
+    try:
+        for name in os.listdir(base):
+            if not name.startswith("thermal_zone"):
+                continue
+            tpath = os.path.join(base, name, "type")
+            vpath = os.path.join(base, name, "temp")
+            try:
+                with open(tpath) as f:
+                    ttype = f.read().strip().lower()
+                with open(vpath) as f:
+                    millideg = int(f.read().strip())
+                temps[ttype] = millideg / 1000.0
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Fallback to vcgencmd for SoC if nothing obvious found
+    if not any(k in temps for k in ("cpu-thermal", "soc-thermal", "bcm2835_thermal", "rpi-thermal")):
+        try:
+            out = subprocess.check_output(["vcgencmd", "measure_temp"], text=True).strip()
+            # format: temp=47.3'C
+            val = float(out.split("=")[1].split("'")[0])
+            temps.setdefault("cpu-thermal", val)
+        except Exception:
+            pass
+    return temps
+    
+def read_named_temps():
+    """
+    Returns a tuple (soc_C, rp1_C, pmic_C) where each may be None if unavailable.
+    """
+    zones = _read_all_thermal_zones()
+    # SoC/CPU candidates (first match wins)
+    for key in ("cpu-thermal", "soc-thermal", "bcm2835_thermal", "rpi-thermal", "cpu"):
+        if key in zones:
+            soc = zones[key]
+            break
+    else:
+        soc = None
+
+    # RP1 southbridge (Pi 5)
+    rp1 = None
+    for k, v in zones.items():
+        if "rp1" in k:
+            rp1 = v
+            break
+
+    # PMIC temperature (name varies; look for 'pmic')
+    pmic = None
+    for k, v in zones.items():
+        if "pmic" in k:
+            pmic = v
+            break
+
+    return soc, rp1, pmic
+    
+# ============================================================
 # OCR / decoding state
 # ============================================================
 
@@ -214,18 +282,27 @@ def init_logger():
     logfile = open(path, "w", newline="")
     csv_writer = csv.writer(logfile)
     # Combined timestamp + power metrics
-    csv_writer.writerow(["timestamp", "mode", "value", "vbat_mV", "vin_mV", "iout_mA", "error"])
+    csv_writer.writerow(["timestamp", "mode", "value",
+                         "vbat_mV", "vin_mV", "iout_mA",
+                         "soc_C", "rp1_C", "pmic_C",
+                         "error"])
     logfile.flush()
     return logfile, csv_writer
 
 def log_entry(writer, captured_at: datetime, mode, value, error_msg, logfile,
-              vbat_mV=None, vin_mV=None, iout_mA=None):
+              vbat_mV=None, vin_mV=None, iout_mA=None,
+              soc_C=None, rp1_C=None, pmic_C=None):
     ts = _fmt_ts(captured_at)
-    writer.writerow([ts, mode, f"{value:.4f}",
-                     "" if vbat_mV is None else vbat_mV,
-                     "" if vin_mV  is None else vin_mV,
-                     "" if iout_mA is None else iout_mA,
-                     error_msg or ""])
+    writer.writerow([
+        ts, mode, f"{value:.4f}",
+        "" if vbat_mV is None else vbat_mV,
+        "" if vin_mV  is None else vin_mV,
+        "" if iout_mA is None else iout_mA,
+        "" if soc_C  is None else f"{soc_C:.1f}",
+        "" if rp1_C  is None else f"{rp1_C:.1f}",
+        "" if pmic_C is None else f"{pmic_C:.1f}",
+        error_msg or ""
+    ])
     logfile.flush()
 
 # ============================================================

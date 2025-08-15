@@ -468,10 +468,19 @@ def loop(preview=False):
             iout = lp4w_get_iout_mA()
         except Exception as e:
             print(f"[LiFePO4wered] read failed: {e}")
+            
+        # Board temperatures (best-effort)
+        soc_C = rp1_C = pmic_C = None
+        try:
+            soc_C, rp1_C, pmic_C = read_named_temps()
+        except Exception as e:
+            print(f"[temps] read failed: {e}")
+
 
         print(f"{mode_str}, {total_value:.4f}")
-        log_entry(csv_writer, captured_at, mode_str, total_value, error_msg, logfile,
-                  vbat_mV=vbat, vin_mV=vin, iout_mA=iout)
+log_entry(csv_writer, captured_at, mode_str, total_value, error_msg, logfile,
+          vbat_mV=vbat, vin_mV=vin, iout_mA=iout,
+          soc_C=soc_C, rp1_C=rp1_C, pmic_C=pmic_C)
         error_msg = ""
 
         if preview:

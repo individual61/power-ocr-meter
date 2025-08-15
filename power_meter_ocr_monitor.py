@@ -478,9 +478,9 @@ def loop(preview=False):
 
 
         print(f"{mode_str}, {total_value:.4f}")
-log_entry(csv_writer, captured_at, mode_str, total_value, error_msg, logfile,
-          vbat_mV=vbat, vin_mV=vin, iout_mA=iout,
-          soc_C=soc_C, rp1_C=rp1_C, pmic_C=pmic_C)
+        log_entry(csv_writer, captured_at, mode_str, total_value, error_msg, logfile,
+                  vbat_mV=vbat, vin_mV=vin, iout_mA=iout,
+                  soc_C=soc_C, rp1_C=rp1_C, pmic_C=pmic_C)
         error_msg = ""
 
         if preview:

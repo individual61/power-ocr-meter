@@ -241,7 +241,7 @@ roi_dot3 = (464, 379, 464 + dot_width, 379 + dot_height)
 roi_dot4 = (592, 382, 592 + dot_width, 382 + dot_height)
 array_of_dot_rois = [roi_dot2, roi_dot3, roi_dot4]
 
-MODE_INDICATORS = ["watt", "curr", "volt", "freq", "ct", "ec", "pf"]
+MODE_INDICATORS = ["w", "curr", "volt", "freq", "ct", "ec", "pf"]
 SEGMENT_NAMES = ["a", "b", "c", "d", "e", "f", "g"]
 DOT_NAMES = ["0.001", "0.01", "0.1"]
 DIGIT_NAMES = ["1E4", "1E3", "1E2", "1E1", "1E0"]

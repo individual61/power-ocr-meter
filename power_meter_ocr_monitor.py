@@ -58,6 +58,10 @@ CAPTURE_INTERVAL = args.interval
 LOG_DIR = args.log_dir
 RESOLUTION = parse_res(args.resolution)
 
+# CSV flush tuning
+FLUSH_EVERY = 10
+ROWS_SINCE_FLUSH = 0
+
 # ============================================================
 # LiFePO4wered integration
 # ============================================================
@@ -128,10 +132,10 @@ def lp4w_apply_config(delay_minutes: int, auto_boot_mode: int, persist: bool):
 LP4W_POLICY = {
     "AUTO_BOOT": 3,            # 3 = AUTO_BOOT_VIN (boot only when VIN present)
     "AUTO_SHDN_TIME": 2,       # minutes to wait after VIN < threshold before shutdown
-    "VIN_THRESHOLD_mV": 4500,  # adjust if your PSU/cable sags
+    "VIN_THRESHOLD_mV": 4400,  # adjust if your PSU/cable sags
     # "VBAT_BOOT_mV": 3150,    # add if you want to override default boot threshold
 }
-LP4W_PERSIST_DEFAULT = False   # use --lp4w-persist to write to flash
+LP4W_PERSIST_DEFAULT = True   # use --lp4w-persist to write to flash
 
 # ============================================================
 # Temperature helpers
@@ -215,7 +219,7 @@ RUNNING = True  # toggled by signal handlers
 
 # Global offsets/ROIs
 roi_offs_x = 0
-roi_offs_y = 0
+roi_offs_y = -10
 roi_watt = (22, 196, 112, 232)
 roi_curr = (22, 237, 93, 276)
 roi_volt = (22, 280, 107, 317)
@@ -241,7 +245,7 @@ roi_dot3 = (464, 379, 464 + dot_width, 379 + dot_height)
 roi_dot4 = (592, 382, 592 + dot_width, 382 + dot_height)
 array_of_dot_rois = [roi_dot2, roi_dot3, roi_dot4]
 
-MODE_INDICATORS = ["w", "curr", "volt", "freq", "ct", "ec", "pf"]
+MODE_INDICATORS = ["watt", "curr", "volt", "freq", "ct", "ec", "pf"]
 SEGMENT_NAMES = ["a", "b", "c", "d", "e", "f", "g"]
 DOT_NAMES = ["0.001", "0.01", "0.1"]
 DIGIT_NAMES = ["1E4", "1E3", "1E2", "1E1", "1E0"]
@@ -275,7 +279,7 @@ def _fmt_ts(dt: datetime) -> str:
     return f"{dt:%Y-%m-%d %H:%M:%S}.{dt.microsecond // 1000:03d}"
 
 def init_logger():
-    global logfile, csv_writer
+    global logfile, csv_writer, ROWS_SINCE_FLUSH
     os.makedirs(LOG_DIR, exist_ok=True)
     fname = datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
     path = os.path.join(LOG_DIR, fname)
@@ -287,11 +291,14 @@ def init_logger():
                          "soc_C", "rp1_C", "pmic_C",
                          "error"])
     logfile.flush()
+    ROWS_SINCE_FLUSH = 0
+    
     return logfile, csv_writer
 
 def log_entry(writer, captured_at: datetime, mode, value, error_msg, logfile,
               vbat_mV=None, vin_mV=None, iout_mA=None,
               soc_C=None, rp1_C=None, pmic_C=None):
+    global ROWS_SINCE_FLUSH, FLUSH_EVERY
     ts = _fmt_ts(captured_at)
     writer.writerow([
         ts, mode, f"{value:.4f}",
@@ -303,7 +310,11 @@ def log_entry(writer, captured_at: datetime, mode, value, error_msg, logfile,
         "" if pmic_C is None else f"{pmic_C:.1f}",
         error_msg or ""
     ])
-    logfile.flush()
+    
+    ROWS_SINCE_FLUSH += 1
+    if ROWS_SINCE_FLUSH >= FLUSH_EVERY:
+        logfile.flush()
+        ROWS_SINCE_FLUSH = 0
 
 # ============================================================
 # Image processing helpers
@@ -357,15 +368,27 @@ def get_digit_sub_roi(digit_roi):
 def setup(resolution=(640, 480), framerate=30, preview=False):
     global last_capture_time, picam2
     last_capture_time = time.time() - CAPTURE_INTERVAL
+    
+ #   cams = Picamera2.global_camera_info()
+ #   if not cams:
+ #       raise RuntimeError("No camera detected. Check cable and try 'rpicam-hello -n -t 2000'.")
+ #   
+ #   try:
+ #       picam2 = Picamera2()
+ #   except Exception as e:
+ #       if "Resource busy" in str(e) or "busy" in str(e).lower():
+ #           raise RuntimeError("Camera device is busy. Stop any service using it (e.g., 'sudo systemctl stop power-ocr-meter').")
+    
     picam2 = Picamera2()
-
     config = picam2.create_video_configuration(
         main={"size": resolution, "format": "XRGB8888"}  # single stream
     )
     picam2.configure(config)
-    picam2.set_controls({"FrameRate": 10})  # lighten ISP load
+    picam2.set_controls({"FrameRate": 10, "AeEnable": True, "AwbEnable": True})  # lighten ISP load
     picam2.start()
-    time.sleep(0.1)
+    time.sleep(1.0)
+    #throw away first frame
+    _ = picam2.capture_array()
     if preview:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
@@ -395,7 +418,12 @@ def loop(preview=False):
 
         frame_clean = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         frame_clean_gr_pre = cv2.cvtColor(frame_clean, cv2.COLOR_BGR2GRAY)
-        _, frame_clean_gr = cv2.threshold(frame_clean_gr_pre, 160, 255, cv2.THRESH_BINARY)
+        
+        #Hard-coded thresholding
+        #_, frame_clean_gr = cv2.threshold(frame_clean_gr_pre, 160, 255, cv2.THRESH_BINARY)
+
+        #Otsu thresholding, which pics from the image histogram
+        _, frame_clean_gr = cv2.threshold(frame_clean_gr_pre, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         if preview:
             frame_annotated_color = cv2.cvtColor(frame_clean_gr, cv2.COLOR_GRAY2BGR)

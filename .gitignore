@@ -1,2 +1,3 @@
 /Mechanicals/external models
 *.csv
+/data_processing/.ipynb_checkpoints
